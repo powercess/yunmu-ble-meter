@@ -285,7 +285,15 @@ class BleMeter:
         )
 
     def clear(self, timeout: float | None = None) -> protocol.Response:
-        """Clear the device's cumulative counters; returns the device acknowledgement."""
+        """Send the counter-clear command; returns the device acknowledgement.
+
+        The device answers with a ``0x07`` reply echoing the counter value at the
+        moment of the request, which proves the command was accepted. It was
+        **not** observed to reset the counter readable in a subsequent ``read()``
+        during testing: replaying the exact frame captured from the app produced
+        the acknowledgement but left ``counter`` unchanged. Treat this as
+        "command accepted", not "state verified reset" — see README.
+        """
         reply = self.transact(protocol.build_clear(self.mac), timeout)
         return protocol.parse_response(reply, self.mac)
 

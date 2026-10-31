@@ -21,12 +21,15 @@ $ yunmu-meter --mac 26:04:18:01:12:F4
 - **BLE client** — talks to BlueZ over D-Bus; connects, polls, and releases the
   link so the phone app can be used again.
 - **Prometheus exporter** — `/metrics` endpoint with live readings plus a
-  locally integrated energy counter.
+  locally integrated energy counter, so energy accounting does not depend on the
+  device's own accumulator.
 
 ## What it does not do
 
 - **Switch the relay.** This model exposes no on/off control through the app and
   no command was ever observed. There is nothing to replay.
+- **Reset the device's accumulator.** The clear command is accepted but not
+  observed to zero the counter (see *Known gaps*).
 - **Read cloud-side totals.** Cumulative cost and runtime live in the vendor's
   database, not on the device.
 - **Write arbitrary payloads.** The firmware only accepts the handful of
@@ -147,6 +150,12 @@ calibration evidence: [`docs/protocol.md`](docs/protocol.md).
   derivable from the value; captured samples live in
   `protocol.CONFIG_TAIL_SAMPLES`. Byte-exact replays should pass `tail`
   explicitly.
+- **`clear()` is ack-only, not verified reset.** Replaying the exact frame the
+  vendor app sends yields a valid `0x07` acknowledgement, but the counter read
+  back afterwards was unchanged in testing. The app's own clear did drop the
+  displayed total, so something beyond the BLE frame is involved (most likely
+  the companion cloud call). Do not rely on `clear()` to zero the accumulator;
+  track energy locally via `yunmu_energy_kwh` instead.
 
 ## Scope
 
