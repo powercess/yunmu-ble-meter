@@ -1,0 +1,14 @@
+[Unit]
+Description=YunMu BLE meter Prometheus exporter
+After=bluetooth.service network-online.target
+Wants=bluetooth.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -m yunmu_ble_meter.cli --mac 26:04:18:01:12:F4 --interval 2 --port 9103
+Restart=always
+RestartSec=10
+User=root
+
+[Install]
+WantedBy=multi-user.target

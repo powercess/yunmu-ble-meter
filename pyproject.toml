@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yunmu-ble-meter"
+version = "0.1.0"
+description = "Reverse-engineered BLE protocol and Prometheus exporter for YunMu (云牧) YM-S1-BES metering sockets"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["ble", "bluetooth", "prometheus", "energy", "meter", "yunmu"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Topic :: System :: Monitoring",
+]
+dependencies = []
+
+[project.optional-dependencies]
+# distro packages in practice: python3-dbus, python3-gi
+ble = ["dbus-python>=1.3", "PyGObject>=3.44"]
+test = ["pytest>=7"]
+
+[project.scripts]
+yunmu-meter = "yunmu_ble_meter.cli:main"
+
+[tool.setuptools]
+packages = ["yunmu_ble_meter"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
