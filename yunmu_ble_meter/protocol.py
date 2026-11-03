@@ -26,6 +26,10 @@ __all__ = [
     "Frame",
     "Response",
     "ReplyType",
+    "DeviceProfile",
+    "KNOWN_PROFILES",
+    "profile_for",
+    "guess_payload_xor",
     "crc16",
     "crc_params",
     "build_frame",
@@ -45,7 +49,10 @@ MAGIC_V1 = (0xEC, 0xED)
 MAGIC_V2 = (0xCE, 0xDE)
 MAGIC_OPEN = (0xF0, 0x0F)
 
-#: payload obfuscation applied on top of the per-frame XOR
+#: payload obfuscation applied on top of the per-frame XOR. This is NOT a
+#: global constant: every meter uses its own value, and a wrong one makes the
+#: payload decode to garbage (the frame CRC still validates, so this is easy to
+#: miss). 0x2C is the value observed on the first device; see DeviceProfile.
 PAYLOAD_XOR = 0x2C
 
 #: threshold encoding mask (applied in the frame-domain payload)
@@ -56,6 +63,106 @@ CMD_READ = bytes.fromhex("a4aca4")
 CMD_CLEAR = bytes.fromhex("abaead52a4")
 CMD_CONFIG_HEAD = bytes.fromhex("83aa")
 CMD_CONFIG_MID = bytes.fromhex("ac9eacac")
+
+
+@dataclass(frozen=True)
+class DeviceProfile:
+    """Per-device protocol parameters.
+
+    Most of the wire format is derived from the MAC, but two values are issued
+    per device by the vendor cloud and cannot be computed locally:
+
+    ``read_payload``
+        The 3-byte payload of the read request, e.g. ``a4 ac a4``.
+
+    ``payload_xor``
+        The constant that de-obfuscates the response payload. A wrong value
+        still passes the frame CRC — it only corrupts the logical fields — so
+        this has to be captured, not guessed.
+
+    Capture both by impersonating the device with a BLE peripheral and letting
+    the vendor app issue one read (see ``tools/fake_meter``).
+    """
+
+    mac: str
+    read_payload: bytes = CMD_READ
+    payload_xor: int = PAYLOAD_XOR
+
+    # Confidence markers: which values were actually observed on this device.
+    observed_read_payload: bool = False
+    observed_payload_xor: bool = False
+
+
+#: Values captured from physical devices. Add entries as meters are probed.
+KNOWN_PROFILES: dict[str, DeviceProfile] = {
+    # 1号机, SN KK01264l12F4 — original reverse-engineering target
+    "26:04:18:01:12:F4": DeviceProfile(
+        mac="26:04:18:01:12:F4",
+        read_payload=bytes.fromhex("a4aca4"),
+        payload_xor=0x2C,
+        observed_read_payload=True,
+        observed_payload_xor=True,
+    ),
+    # 2号机, SN KK04261F2F96 — captured via BLE impersonation
+    "26:01:15:04:2F:96": DeviceProfile(
+        mac="26:01:15:04:2F:96",
+        read_payload=bytes.fromhex("5a525a"),
+        payload_xor=0x0D,
+        observed_read_payload=True,
+        observed_payload_xor=True,
+    ),
+    # 3号机, SN KK01264I0311 — both values captured and verified
+    "26:04:18:01:03:11": DeviceProfile(
+        mac="26:04:18:01:03:11",
+        read_payload=bytes.fromhex("d0d8d0"),
+        payload_xor=0x79,
+        observed_read_payload=True,
+        observed_payload_xor=True,
+    ),
+    # 4号机 — payload_xor recovered by structure brute force
+    "26:04:18:01:03:16": DeviceProfile(
+        mac="26:04:18:01:03:16",
+        read_payload=bytes.fromhex("b0b8b0"),
+        payload_xor=0x3F,
+        observed_read_payload=True,
+        observed_payload_xor=True,
+    ),
+}
+
+
+def guess_payload_xor(payload: bytes, types: tuple[int, ...] = (0x08, 0x07)) -> int | None:
+    """Recover the payload de-obfuscation constant from one captured reply payload.
+
+    ``payload`` is the frame-domain payload (after the MAC XOR and CRC check).
+    The constant is *not* recoverable from the CRC — that covers the obfuscated
+    bytes — so the structure is used instead: try every constant and keep the one
+    that yields a known reply type whose inner checksum is self-consistent.
+
+    Returns ``None`` when no constant satisfies the structure (the payload is not
+    a reply, or was captured mid-frame).
+    """
+    for candidate in range(256):
+        plain = bytes(b ^ candidate for b in payload)
+        if len(plain) < 3:
+            continue
+        reply_type, length = plain[0], plain[1]
+        if reply_type not in types:
+            continue
+        if 2 + length + 1 > len(plain):
+            continue
+        if plain[2 + length] != (sum(plain[: 2 + length]) & 0xFF):
+            continue
+        return candidate
+    return None
+
+
+def profile_for(mac: str) -> DeviceProfile:
+    """Return the captured profile for ``mac``, or a MAC-derived default."""
+    key = mac.upper()
+    prof = KNOWN_PROFILES.get(key)
+    if prof is not None:
+        return prof
+    return DeviceProfile(mac=key)
 
 #: the tail byte of a config frame is not derivable from the value; it varies per
 #: command. Known samples: 1000->FE, 2000->92, 2100->0F, 3000->86, 9999->31
@@ -246,20 +353,27 @@ def parse_frame(data: bytes, mac: str) -> Frame:
     return Frame(magic, payload)
 
 
-def deframe_payload(payload: bytes) -> bytes:
+def deframe_payload(payload: bytes, xor: int = PAYLOAD_XOR) -> bytes:
     """Remove the payload-level XOR, yielding plaintext."""
-    return bytes(b ^ PAYLOAD_XOR for b in payload)
+    return bytes(b ^ xor for b in payload)
 
 
-def enframe_payload(plaintext: bytes) -> bytes:
+def enframe_payload(plaintext: bytes, xor: int = PAYLOAD_XOR) -> bytes:
     """Apply the payload-level XOR (inverse of :func:`deframe_payload`)."""
-    return bytes(b ^ PAYLOAD_XOR for b in plaintext)
+    return bytes(b ^ xor for b in plaintext)
 
 
-def parse_response(data: bytes, mac: str) -> Response:
-    """Full decode of a device response: MAC XOR, CRC, payload XOR, checksum."""
+def parse_response(data: bytes, mac: str, payload_xor: int | None = None) -> Response:
+    """Full decode of a device response: MAC XOR, CRC, payload XOR, checksum.
+
+    ``payload_xor`` defaults to the value captured for this MAC (see
+    :data:`KNOWN_PROFILES`). Passing the wrong constant still passes the frame
+    CRC but yields garbage fields, so prefer :func:`profile_for` over guessing.
+    """
+    if payload_xor is None:
+        payload_xor = profile_for(mac).payload_xor
     frame = parse_frame(data, mac)
-    plain = deframe_payload(frame.payload)
+    plain = deframe_payload(frame.payload, payload_xor)
     if len(plain) < 3:
         raise DecodeError("response too short")
 
@@ -275,9 +389,15 @@ def parse_response(data: bytes, mac: str) -> Response:
     return Response(reply_type, length, data_body, checksum, plain)
 
 
-def build_read(mac: str) -> bytes:
-    """Frame that requests a live reading."""
-    return build_frame(CMD_READ, mac)
+def build_read(mac: str, read_payload: bytes | None = None) -> bytes:
+    """Frame that requests a live reading.
+
+    ``read_payload`` defaults to the value captured for this MAC. Sending
+    another device's command is ignored by the firmware without any error.
+    """
+    if read_payload is None:
+        read_payload = profile_for(mac).read_payload
+    return build_frame(read_payload, mac)
 
 
 def encode_threshold(watts: int) -> bytes:

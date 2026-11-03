@@ -33,7 +33,9 @@ $ yunmu-meter --mac 26:04:18:01:12:F4
 - **Read cloud-side totals.** Cumulative cost and runtime live in the vendor's
   database, not on the device.
 - **Write arbitrary payloads.** The firmware only accepts the handful of
-  commands its cloud issues; anything else is rejected at the GATT layer.
+  commands its cloud issues, and those commands are **per-device**: each meter
+  has its own read payload and its own payload de-obfuscation constant. A frame
+  built with another meter's values is dropped silently, with no error.
 
 ## Install
 
@@ -85,6 +87,24 @@ scrape_configs:
       - targets: ["raspi.local:9103"]
 ```
 
+### Per-device parameters
+
+Most of the wire format is derived from the MAC, but two values are issued by
+the vendor cloud per device and cannot be computed locally:
+
+| value | meaning |
+|---|---|
+| `read_payload` | 3-byte payload of the read request |
+| `payload_xor` | constant that de-obfuscates the response payload |
+
+Captured values live in `protocol.KNOWN_PROFILES`; use `protocol.profile_for(mac)`
+for a defaulted profile. `BleMeter` applies them automatically.
+
+A wrong `payload_xor` still passes the frame CRC — only the logical fields turn
+to garbage — so it cannot be detected from the CRC alone. See
+[`tools/fake_meter`](tools/fake_meter/README.md) for how to capture both values
+for a new meter.
+
 ### Metrics
 
 | Metric | Type | Meaning |
@@ -102,6 +122,47 @@ scrape_configs:
 
 `yunmu_counter_total` wraps at 65536 and is reset by `clear`, so it is a gauge,
 not a counter. For long-horizon accounting use `yunmu_energy_kwh`.
+
+## Multiple meters
+
+One process polls any number of meters round-robin from a single adapter:
+
+```bash
+yunmu-meter --config /etc/yunmu-meter/meters.toml --interval 5
+```
+
+Each meter gets its own labelled series, so Prometheus sees the whole fleet:
+
+```
+yunmu_voltage_volts{device="1号机"} 232.3
+yunmu_voltage_volts{device="2号机"} 231.8
+yunmu_power_watts{device="2号机"} 6.5
+```
+
+The dashboard at `/` shows the same data as a live table; `/metrics` is the
+Prometheus endpoint and `/api/state` the JSON behind the page.
+
+### Adding a meter
+
+Copy `deploy/meters.example.toml` and add a `[[meter]]` block:
+
+```toml
+[[meter]]
+mac = "26:01:15:04:2F:96"
+name = "2号机"
+read_payload = "5a525a"
+payload_xor = 0x0D
+```
+
+Both protocol values are captured per device — see
+[`tools/fake_meter`](tools/fake_meter/README.md). If you only know the read
+command, run with `--learn` and the payload constant is recovered from the first
+reply automatically (it is cached in memory, so put it in the config once known).
+
+`BleMeter` isolates each device: notifications are filtered by object path and
+GATT characteristics are looked up inside the device's own subtree, so several
+collectors can share one adapter. Links are serialised internally because the
+controller refuses a new link while the previous one is tearing down.
 
 ## Systemd
 

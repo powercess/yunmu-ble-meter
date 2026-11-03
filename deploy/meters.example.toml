@@ -1,0 +1,33 @@
+# Copy to /etc/yunmu-meter/meters.toml and adjust.
+#
+# Each meter needs two values that the vendor cloud issues per device and that
+# cannot be derived from the MAC. `read_payload` is the 3-byte read command;
+# `payload_xor` de-obfuscates the reply. Both are captured with
+# tools/fake_meter (see that README).
+#
+# `payload_xor` may be omitted when running with --learn: the exporter recovers
+# it from the first reply and caches it in memory.
+
+[[meter]]
+mac = "26:04:18:01:12:F4"
+name = "1号机"
+read_payload = "a4aca4"
+payload_xor = 0x2C
+
+[[meter]]
+mac = "26:01:15:04:2F:96"
+name = "2号机"
+read_payload = "5a525a"
+payload_xor = 0x0D
+
+[[meter]]
+mac = "26:04:18:01:03:11"
+name = "3号机"
+read_payload = "d0d8d0"
+payload_xor = 0x79
+
+[[meter]]
+mac = "26:04:18:01:03:16"
+name = "4号机"
+read_payload = "b0b8b0"
+payload_xor = 0x3F

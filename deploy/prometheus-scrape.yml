@@ -1,0 +1,24 @@
+# Drop this job into your existing prometheus.yml scrape_configs list.
+#
+#   scrape_configs:
+#     - job_name: yunmu-meter
+#       scrape_interval: 5s
+#       static_configs:
+#         - targets: ["192.168.1.231:9103"]
+#           labels:
+#             instance: living-room
+#             device: ym-s1-bes
+#
+# The exporter itself polls the meter every 2 s and serves the last sample, so
+# the scrape interval only controls how often Prometheus samples that cache.
+# Scraping faster than the poll interval yields duplicate points, not more data.
+
+- job_name: yunmu-meter
+  scrape_interval: 5s
+  scrape_timeout: 4s
+  metrics_path: /metrics
+  static_configs:
+    - targets: ["192.168.1.231:9103"]
+      labels:
+        instance: ym-s1-bes
+        site: home

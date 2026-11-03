@@ -5,3 +5,6 @@ __pycache__/
 build/
 dist/
 .pytest_cache/
+
+# real device config (contains site-specific MACs/names)
+deploy/meters.toml

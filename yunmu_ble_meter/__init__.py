@@ -13,7 +13,9 @@ from __future__ import annotations
 
 from . import protocol
 from .protocol import (
+    KNOWN_PROFILES,
     DecodeError,
+    DeviceProfile,
     ReplyType,
     Response,
     advertised_name,
@@ -24,6 +26,7 @@ from .protocol import (
     mac_from_advertised_name,
     parse_frame,
     parse_response,
+    profile_for,
 )
 
 __version__ = "0.1.0"
@@ -32,6 +35,9 @@ __all__ = [
     "__version__",
     "protocol",
     "DecodeError",
+    "DeviceProfile",
+    "KNOWN_PROFILES",
+    "profile_for",
     "ReplyType",
     "Response",
     "advertised_name",
