@@ -34,7 +34,8 @@ _PAGE = """<!doctype html>
   th, td { padding: 9px 12px; text-align: right; border-bottom: 1px solid #23262d;
            white-space: nowrap; }
   th { color: #8b95a5; font-weight: 500; font-size: 12px;
-       text-transform: uppercase; letter-spacing: .04em; }
+       letter-spacing: .04em; }
+  th .u { text-transform: none; }
   th:first-child, td:first-child { text-align: left; }
   td.mono { font-variant-numeric: tabular-nums; }
   .off { color: #ff6b6b; }
@@ -74,7 +75,9 @@ function render(data) {
     return;
   }
   let h = "<table><thead><tr><th>设备</th><th>状态</th>";
-  for (const [, label, unit] of COLS) h += `<th>${label}${unit ? " (" + unit + ")" : ""}</th>`;
+  for (const [, label, unit] of COLS) {
+    h += `<th>${label}${unit ? ' <span class="u">(' + unit + ")</span>" : ""}</th>`;
+  }
   h += "<th>最后更新</th></tr></thead><tbody>";
   for (const d of data.devices) {
     const up = d.ok;
@@ -86,7 +89,7 @@ function render(data) {
   h += "</tbody></table>";
   const errs = data.devices.filter(d => d.error);
   if (errs.length) {
-    h += '<div class="err">' + errs.map(d => d.label + ": " + d.error).join("\n") + "</div>";
+    h += '<div class="err">' + errs.map(d => d.label + ": " + d.error).join(String.fromCharCode(10)) + "</div>";
   }
   app.innerHTML = h;
 }
