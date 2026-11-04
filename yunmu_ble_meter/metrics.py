@@ -25,12 +25,13 @@ HELP = {
     "yunmu_threshold_watts": "Configured alarm threshold in watts.",
     "yunmu_counter_total": "Raw 16-bit device accumulator (wraps at 65536, resets on clear).",
     "yunmu_energy_kwh": "Energy integrated locally since the exporter started, in kWh.",
+    "yunmu_energy_device_kwh": "Cumulative energy reported by the meter itself, in kWh.",
     "yunmu_scrape_success": "1 if the most recent device read succeeded, else 0.",
     "yunmu_last_read_timestamp_seconds": "Unix timestamp of the last successful read.",
     "yunmu_read_duration_seconds": "Duration of the most recent device read.",
 }
 
-COUNTERS = {"yunmu_energy_kwh"}
+COUNTERS = {"yunmu_energy_kwh", "yunmu_energy_device_kwh"}
 
 #: order matters for readable exposition output
 SERIES_ORDER = [
@@ -41,6 +42,7 @@ SERIES_ORDER = [
     "yunmu_threshold_watts",
     "yunmu_counter_total",
     "yunmu_energy_kwh",
+    "yunmu_energy_device_kwh",
     "yunmu_scrape_success",
     "yunmu_last_read_timestamp_seconds",
     "yunmu_read_duration_seconds",
@@ -141,6 +143,7 @@ class MeterMetrics:
                     state.energy_kwh += prev_w * dt / 3600.0 / 1000.0
             state._last_sample = (now, reading.power)
             state.values = {
+                "yunmu_energy_device_kwh": getattr(reading, "device_energy_kwh", 0.0),
                 "yunmu_voltage_volts": reading.voltage,
                 "yunmu_current_amperes": reading.current,
                 "yunmu_power_watts": reading.power,

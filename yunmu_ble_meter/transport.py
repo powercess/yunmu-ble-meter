@@ -435,6 +435,7 @@ class BleMeter:
         resp = protocol.parse_response(reply, self.mac, self.profile.payload_xor)
         return Reading(
             counter=resp.counter,
+            device_energy_kwh=resp.device_energy_kwh,
             voltage=resp.voltage or 0.0,
             power=resp.power or 0.0,
             current=resp.current or 0.0,

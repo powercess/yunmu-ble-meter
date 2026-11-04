@@ -201,8 +201,22 @@ config   payload 83 AA <hi> <lo> AC 9E AC AC <tail>
 Full write-up, including the reverse-engineering trail and the field
 calibration evidence: [`docs/protocol.md`](docs/protocol.md).
 
+## Device-side energy
+
+`yunmu_energy_device_kwh` is the meter's own cumulative total, scaled from its
+16-bit accumulator by `protocol.WH_PER_COUNT` (0.26 Wh/count, calibrated against
+the vendor app: 0.16 kWh at count 607). Unlike `yunmu_energy_kwh` it survives an
+exporter restart and is only zeroed when the meter's total is cleared in the app.
+
+The accumulator wraps at 65536 counts (~17 kWh).
+
 ## Known gaps
 
+- **High-load accumulator lag.** Above roughly 250 W the accumulator advances
+  much slower than the measured power implies (300 W for 6 minutes moved it 5
+  counts, which is ~6 Wh/count instead of 0.26). Below that it tracks correctly.
+  The scale above is therefore fitted to normal household loads; do not trust
+  `yunmu_energy_device_kwh` deltas during sustained high-power use.
 - **Energy scale factor unverified.** The accumulator is known to step
   monotonically (318 steps over 7 h of mixed load), giving an estimate of
   ≈0.019 Wh/step, but this has not been calibrated against a known load. Verify

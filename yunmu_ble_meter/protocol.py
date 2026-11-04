@@ -30,6 +30,7 @@ __all__ = [
     "KNOWN_PROFILES",
     "profile_for",
     "guess_payload_xor",
+    "WH_PER_COUNT",
     "crc16",
     "crc_params",
     "build_frame",
@@ -48,6 +49,14 @@ MAGIC_V0 = (0x93, 0x92)
 MAGIC_V1 = (0xEC, 0xED)
 MAGIC_V2 = (0xCE, 0xDE)
 MAGIC_OPEN = (0xF0, 0x0F)
+
+#: Energy represented by one increment of the device accumulator.
+#:
+#: Two independent observations agree within 5%:
+#:   * device 2: app showed 0.16 kWh at counter=607  -> 0.2636 Wh/count
+#:   * device 1: 16.7 W for 594 s (+2.76 Wh) moved the counter by 10 -> 0.276
+#: The counter is a 16-bit register, so it wraps at 65536 ~ 17 kWh.
+WH_PER_COUNT = 0.26
 
 #: payload obfuscation applied on top of the per-frame XOR. This is NOT a
 #: global constant: every meter uses its own value, and a wrong one makes the
@@ -224,33 +233,55 @@ class Response:
     checksum: int
     plaintext: bytes
 
+    def _u16(self, offset: int) -> int | None:
+        """Big-endian 16-bit field at ``offset`` inside ``data``.
+
+        Every measurement is 16 bits wide. Reading only the low byte silently
+        truncates anything above 255 (a 297 W load reads as 15 W), which is why
+        these used to be ``data[i] / scale``.
+        """
+        if self.type != ReplyType.READ or self.length < offset + 2:
+            return None
+        return (self.data[offset] << 8) | self.data[offset + 1]
+
     @property
     def counter(self) -> int:
-        """16-bit device counter (cumulative energy accumulator, wraps at 65536)."""
+        """16-bit device accumulator (energy, wraps at 65536, zeroed by clear).
+
+        Confirmed to be the energy counter: it only advances under load, stops
+        when the load is removed, and the app's "clear total" writes it to 0.
+        """
         if self.type == ReplyType.READ:
             return (self.data[7] << 8) | self.data[8]
         return (self.data[6] << 8) | self.data[7]
 
     @property
+    def device_energy_kwh(self) -> float:
+        """Cumulative energy reported by the device itself, in kWh.
+
+        This is the meter's own accumulator scaled by :data:`WH_PER_COUNT`, so
+        unlike a locally integrated total it survives an exporter restart and
+        is zeroed only when the app clears the meter.
+        """
+        return self.counter * WH_PER_COUNT / 1000.0
+
+    @property
     def voltage(self) -> float | None:
         """Volts, or ``None`` if this reply carries no measurement."""
-        if self.type != ReplyType.READ or self.length < 15:
-            return None
-        return ((self.data[11] << 8) | self.data[12]) / 10.0
+        v = self._u16(11)
+        return None if v is None else v / 10.0
 
     @property
     def power(self) -> float | None:
         """Active power in watts."""
-        if self.type != ReplyType.READ or self.length < 12:
-            return None
-        return self.data[10] / 10.0
+        v = self._u16(9)
+        return None if v is None else v / 10.0
 
     @property
     def current(self) -> float | None:
         """Current in amperes."""
-        if self.type != ReplyType.READ or self.length < 15:
-            return None
-        return self.data[14] / 1000.0
+        v = self._u16(13)
+        return None if v is None else v / 1000.0
 
     @property
     def power_factor(self) -> float | None:
@@ -262,9 +293,7 @@ class Response:
     @property
     def threshold(self) -> int | None:
         """Alarm threshold in watts, as echoed back by the device."""
-        if self.type != ReplyType.READ or self.length < 18:
-            return None
-        return (self.data[16] << 8) | self.data[17]
+        return self._u16(16)
 
 
 def mac_bytes(mac: str) -> bytes:

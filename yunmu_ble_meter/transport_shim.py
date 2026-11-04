@@ -36,3 +36,10 @@ class Reading:
 
     raw: bytes
     """The full 32-byte plaintext response, for debugging."""
+
+    device_energy_kwh: float = 0.0
+    """The meter's own cumulative energy, scaled from ``counter``.
+
+    This is authoritative and survives exporter restarts, unlike the locally
+    integrated total. Zeroed only when the meter's own total is cleared.
+    """

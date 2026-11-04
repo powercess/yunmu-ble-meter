@@ -309,3 +309,80 @@ def test_every_known_profile_is_complete():
         assert len(p.read_payload) == 3, mac
         s = p.read_payload[0]
         assert p.read_payload == bytes([s, s ^ 0x08, s]), mac
+
+
+# ------------------------------------------- 16-bit measurement fields
+
+#: captured from device 2 driving a 297 W heat gun. Every measurement field is
+#: 16 bits wide; reading only the low byte reports 15 W / 0.057 A instead.
+HEAT_GUN_PAYLOAD = bytes.fromhex(
+    "081d0000000001000002280b9808ae05396309c400000032000000000000054e"
+)
+#: same device, 16.7 W load on another meter
+SMALL_LOAD_PAYLOAD = bytes.fromhex(
+    "081d00000000000000000100a708b2009e2f07d0000000320000000000000562"
+)
+
+
+def _response(payload: bytes) -> protocol.Response:
+    return protocol.Response(
+        type=payload[0],
+        length=payload[1],
+        data=payload[2 : 2 + payload[1]],
+        checksum=payload[2 + payload[1]],
+        plaintext=payload,
+    )
+
+
+def test_high_power_is_not_truncated_to_one_byte():
+    r = _response(HEAT_GUN_PAYLOAD)
+    assert r.power == pytest.approx(296.8)
+    assert r.current == pytest.approx(1.337)
+    assert r.voltage == pytest.approx(222.2)
+
+
+def test_high_power_is_self_consistent():
+    r = _response(HEAT_GUN_PAYLOAD)
+    apparent = r.voltage * r.current
+    assert apparent * r.power_factor == pytest.approx(r.power, rel=0.02)
+
+
+def test_small_load_still_parses():
+    r = _response(SMALL_LOAD_PAYLOAD)
+    assert r.power == pytest.approx(16.7)
+    assert r.current == pytest.approx(0.158)
+    assert r.voltage == pytest.approx(222.6)
+    assert r.threshold == 2000
+
+
+def test_threshold_is_sixteen_bit():
+    r = _response(HEAT_GUN_PAYLOAD)
+    assert r.threshold == 2500
+    r2 = _response(SMALL_LOAD_PAYLOAD)
+    assert r2.threshold == 2000
+
+
+# --------------------------------------- device-side cumulative energy
+
+def test_device_energy_matches_the_vendor_app():
+    """The app showed 0.16 kWh when the counter read 607."""
+    payload = bytes.fromhex(
+        "081d000000000b0000025f0bc708bf05e1e00d2d000000000000000000000000"
+    )
+    r = _response(payload)
+    assert r.counter == 607
+    # app shows two decimals, so allow its +/-0.005 rounding
+    assert r.device_energy_kwh == pytest.approx(0.16, abs=0.006)
+
+
+def test_device_energy_scales_with_counter():
+    a = protocol.Response(0x08, 29, b"\x00" * 7 + b"\x01\x00" + b"\x00" * 20, 0, b"")
+    b = protocol.Response(0x08, 29, b"\x00" * 7 + b"\x02\x00" + b"\x00" * 20, 0, b"")
+    assert b.device_energy_kwh == pytest.approx(a.device_energy_kwh * 2)
+
+
+def test_device_energy_wraps_at_16_bits():
+    """65536 counts is the full range of the register (~17 kWh)."""
+    r = protocol.Response(0x08, 29, b"\x00" * 7 + b"\xff\xff" + b"\x00" * 20, 0, b"")
+    assert r.counter == 65535
+    assert r.device_energy_kwh == pytest.approx(65535 * protocol.WH_PER_COUNT / 1000)
