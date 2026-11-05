@@ -1,24 +1,27 @@
 # Drop this job into your existing prometheus.yml scrape_configs list.
 #
+# The meter publishes exactly one new record per second (measured 1.005 s
+# median, phase-locked), and the exporter samples it 2.5 times per second so no
+# record is missed. The scrape interval must therefore be at most one second or
+# the database stores a decimated copy: at 5 s only one of every five records
+# survives, which throws away the sampling work upstream.
+#
+# Scraping is a read of the exporter's in-memory snapshot (68 samples, ~3 ms),
+# not a BLE read, so 1 s costs the meter nothing.
+#
 #   scrape_configs:
 #     - job_name: yunmu-meter
-#       scrape_interval: 5s
+#       scrape_interval: 1s
 #       static_configs:
 #         - targets: ["192.168.1.231:9103"]
 #           labels:
-#             instance: living-room
-#             device: ym-s1-bes
-#
-# The exporter itself polls the meter every 2 s and serves the last sample, so
-# the scrape interval only controls how often Prometheus samples that cache.
-# Scraping faster than the poll interval yields duplicate points, not more data.
+#             site: home
 
 - job_name: yunmu-meter
-  scrape_interval: 5s
-  scrape_timeout: 4s
+  scrape_interval: 1s
+  scrape_timeout: 1s
   metrics_path: /metrics
   static_configs:
     - targets: ["192.168.1.231:9103"]
       labels:
-        instance: ym-s1-bes
         site: home

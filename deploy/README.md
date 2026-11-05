@@ -29,7 +29,15 @@ curl -s localhost:9103/metrics | grep yunmu_
 ## 2. Prometheus
 
 Append the job from `prometheus-scrape.yml` to `scrape_configs` in
-`/etc/prometheus/prometheus.yml`, then:
+`/etc/prometheus/prometheus.yml`.
+
+The job scrapes at `1s`. The meter publishes one new record per second, so a
+slower interval stores a decimated copy of what the exporter already collected:
+at the usual `5s` default only one record in five survives. Scraping is a read of
+the exporter's memory, not of the BLE link, so 1 s costs nothing on the device
+side.
+
+Then validate and reload:
 
 ```bash
 sudo promtool check config /etc/prometheus/prometheus.yml
@@ -48,8 +56,18 @@ curl -s 'localhost:9090/api/v1/targets?state=active' | grep -o '"health":"[^"]*"
 # current draw
 yunmu_power_watts
 
-# energy over the last 24 h, as a running total
+# energy over the last 24 h, as a running total (local integral: resets when
+# the exporter restarts, so prefer the device-side counter for long horizons)
 increase(yunmu_energy_kwh[24h])
+
+# device-side cumulative energy, survives exporter restarts
+yunmu_energy_device_kwh
+
+# sampling health: must stay 0, otherwise the exporter fell behind
+rate(yunmu_sampling_gaps_total[10m])
+
+# device updates observed per second: ~1 while the load is moving
+rate(yunmu_device_tick_total[5m])
 
 # is the meter reachable?
 yunmu_scrape_success == 0
@@ -59,14 +77,18 @@ avg_over_time(yunmu_voltage_volts[5m])
 ```
 
 `yunmu_energy_kwh` is a monotonic counter maintained by the exporter, so
-`rate()` and `increase()` work on it. `yunmu_counter_total` is the device's own
-raw accumulator — it wraps at 65536 and must not be rate()'d.
+`rate()` and `increase()` work on it, but it restarts from zero whenever the
+process does, which `increase()` renders as a discontinuity.
+`yunmu_energy_device_kwh` comes from the meter's own accumulator and survives
+restarts. `yunmu_counter_total` is that accumulator's raw count — it wraps at
+65536 and must not be rate()'d.
 
 ## Notes
 
 - The exporter holds the meter's only BLE connection, so the phone app cannot
   connect while it runs. `sudo systemctl stop yunmu-meter` to hand the link back;
   the meter usually needs a power cycle before it will advertise again.
-- The exporter polls every 2 s by default (`--interval`). Whether the device
-  refreshes its readings faster than that is an open question: measure it with
-  `tools/probe_rate.py` before lowering the interval.
+- The exporter samples at `--interval 0.8` with two probes per cycle (2.5
+  reads/s) so every 1 Hz device record is observed. The meter publishes exactly
+  one new record per second, so sampling faster adds airtime without adding
+  resolution; `tools/probe_rate.py` re-measures both numbers.
