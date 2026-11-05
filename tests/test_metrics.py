@@ -209,3 +209,116 @@ def test_label_is_escaped():
     metrics.record_for(MAC_A, make_reading(), 0.01)
     text = metrics.render()
     assert 'device="weird\\"label"' in text
+
+
+# ------------------------------------------------- device update cadence
+#
+# The meter replaces its whole record once a second (measured 1.005 s median,
+# phase-locked), so "one sample per update" is the requirement these tests pin.
+
+
+def _tick_series(metrics, clock, mac, ticks, read_hz):
+    """Feed ``ticks`` device updates sampled at ``read_hz``, advancing the clock."""
+    step = 1.0 / read_hz
+    for i in range(int(ticks / step)):
+        # the device publishes a new record once per second of elapsed time
+        metrics.record_for(mac, make_reading(power=float(1 + int(i * step))), 0.01)
+        clock["t"] += step
+
+
+def test_sampling_slower_than_the_tick_is_reported(monkeypatch):
+    """One read per 3 s must show up as scheduling gaps, not as silent loss."""
+    metrics = MeterMetrics()
+    clock = {"t": 1_000_000.0}
+    monkeypatch.setattr("time.time", lambda: clock["t"])
+
+    _tick_series(metrics, clock, MAC_A, ticks=10, read_hz=1.0 / 3.0)
+    v = parse_exposition(metrics.render(), device=MAC_A)
+    # 10 s of wall time at one read per 3 s: reads at 0/3/6 (then the loop ends)
+    assert v["yunmu_read_total"] == 3
+    assert v["yunmu_sampling_gaps_total"] == 2
+    assert v["yunmu_max_read_gap_seconds"] == pytest.approx(3.0, abs=0.05)
+
+
+def test_device_tick_counts_each_value_change(monkeypatch):
+    metrics = MeterMetrics()
+    clock = {"t": 1_000_000.0}
+    monkeypatch.setattr("time.time", lambda: clock["t"])
+
+    _tick_series(metrics, clock, MAC_A, ticks=5, read_hz=4.0)
+    v = parse_exposition(metrics.render(), device=MAC_A)
+    assert v["yunmu_device_tick_total"] == pytest.approx(5, abs=1)
+    assert v["yunmu_sampling_gaps_total"] == 0
+    assert v["yunmu_tick_interval_seconds"] == pytest.approx(1.0, abs=0.05)
+
+
+def test_sampling_faster_than_the_tick_leaves_no_gap(monkeypatch):
+    """Two probes per device update: every read lands within one hold."""
+    metrics = MeterMetrics()
+    clock = {"t": 1_000_000.0}
+    monkeypatch.setattr("time.time", lambda: clock["t"])
+
+    _tick_series(metrics, clock, MAC_A, ticks=20, read_hz=2.0)
+    v = parse_exposition(metrics.render(), device=MAC_A)
+    assert v["yunmu_sampling_gaps_total"] == 0
+    assert v["yunmu_max_read_gap_seconds"] == pytest.approx(0.5, abs=0.05)
+    assert v["yunmu_device_tick_total"] == pytest.approx(20, abs=1)
+
+
+def test_stale_values_are_not_counted_as_ticks(monkeypatch):
+    """Repeated identical reads are one update, not many."""
+    metrics = MeterMetrics()
+    clock = {"t": 1_000_000.0}
+    monkeypatch.setattr("time.time", lambda: clock["t"])
+
+    for _ in range(50):
+        metrics.record_for(MAC_A, make_reading(power=4.5), 0.01)
+        clock["t"] += 0.4
+
+    v = parse_exposition(metrics.render(), device=MAC_A)
+    assert v["yunmu_device_tick_total"] == 0
+    assert v["yunmu_read_total"] == 50
+
+
+def test_counter_change_alone_is_not_a_tick(monkeypatch):
+    """The accumulator steps every 60 s and must not look like a device update."""
+    metrics = MeterMetrics()
+    clock = {"t": 1_000_000.0}
+    monkeypatch.setattr("time.time", lambda: clock["t"])
+
+    for i in range(40):
+        metrics.record_for(MAC_A, make_reading(counter=600 + i), 0.01)
+        clock["t"] += 0.5
+
+    v = parse_exposition(metrics.render(), device=MAC_A)
+    assert v["yunmu_device_tick_total"] == 0
+
+
+def test_a_gap_longer_than_one_hold_is_counted(monkeypatch):
+    """A 5 s break in reads exceeds one device hold, so it is reported."""
+    metrics = MeterMetrics()
+    clock = {"t": 1_000_000.0}
+    monkeypatch.setattr("time.time", lambda: clock["t"])
+
+    metrics.record_for(MAC_A, make_reading(power=1.0), 0.01)
+    clock["t"] += 1.0
+    metrics.record_for(MAC_A, make_reading(power=2.0), 0.01)
+    clock["t"] += 5.0
+    metrics.record_for(MAC_A, make_reading(power=3.0), 0.01)
+
+    v = parse_exposition(metrics.render(), device=MAC_A)
+    assert v["yunmu_device_tick_total"] == 2
+    assert v["yunmu_sampling_gaps_total"] == 1
+    assert v["yunmu_max_read_gap_seconds"] == pytest.approx(5.0, abs=0.01)
+
+
+def test_sample_age_reports_staleness(monkeypatch):
+    metrics = MeterMetrics()
+    clock = {"t": 1_000_000.0}
+    monkeypatch.setattr("time.time", lambda: clock["t"])
+
+    metrics.record_for(MAC_A, make_reading(), 0.01)
+    clock["t"] += 3.5
+    assert parse_exposition(metrics.render(), device=MAC_A)[
+        "yunmu_sample_age_seconds"
+    ] == pytest.approx(3.5, abs=0.01)

@@ -116,19 +116,37 @@ for a new meter.
 | `yunmu_threshold_watts` | gauge | Configured alarm threshold |
 | `yunmu_counter_total` | gauge | Raw 16-bit device accumulator |
 | `yunmu_energy_kwh` | counter | Energy integrated locally since start |
+| `yunmu_energy_device_kwh` | counter | Energy the meter reports for itself |
 | `yunmu_scrape_success` | gauge | 1 if the last read succeeded |
 | `yunmu_last_read_timestamp_seconds` | gauge | Unix time of last good read |
 | `yunmu_read_duration_seconds` | gauge | Duration of the last read |
+| `yunmu_sample_age_seconds` | gauge | Seconds since the last good read |
+| `yunmu_read_total` | counter | Successful reads so far |
+| `yunmu_device_tick_total` | counter | Device updates observed (value changes) |
+| `yunmu_sampling_gaps_total` | counter | Reads that came >1 s after the previous read |
+| `yunmu_tick_interval_seconds` | gauge | Smoothed gap between observed updates |
+| `yunmu_max_read_gap_seconds` | gauge | Longest interval between two reads since start |
 
 `yunmu_counter_total` wraps at 65536 and is reset by `clear`, so it is a gauge,
 not a counter. For long-horizon accounting use `yunmu_energy_kwh`.
+
+`yunmu_device_tick_total` counts device updates actually observed; at 2.5 reads/s
+against a 1 Hz device it should advance at ~1/s. It can only be non-zero while
+the readings change, so a meter on a constant load reports a flat counter even
+when sampling is perfect — do not alert on it.
+
+`yunmu_sampling_gaps_total` is the load-independent health signal: it counts
+reads that arrived more than one device hold (1 s) after the previous read, which
+is the only window in which a published record can be replaced unread. It should
+stay flat. `yunmu_max_read_gap_seconds` is the worst such interval. Alert on
+`rate(yunmu_sampling_gaps_total[10m]) > 0`.
 
 ## Multiple meters
 
 One process polls any number of meters round-robin from a single adapter:
 
 ```bash
-yunmu-meter --config /etc/yunmu-meter/meters.toml --interval 5
+yunmu-meter --config /etc/yunmu-meter/meters.toml --interval 0.8
 ```
 
 Each meter gets its own labelled series, so Prometheus sees the whole fleet:
@@ -201,6 +219,84 @@ config   payload 83 AA <hi> <lo> AC 9E AC AC <tail>
 Full write-up, including the reverse-engineering trail and the field
 calibration evidence: [`docs/protocol.md`](docs/protocol.md).
 
+## Measuring the refresh rate
+
+`tools/probe_rate.py` separates three things that are easy to conflate:
+
+- **poll ceiling** — reads/second the link can carry at all (connection
+  interval, MTU and the firmware's reply path), independent of measurement rate;
+- **native push** — whether the device streams notifications on its own once
+  subscribed, with no request;
+- **novelty rate** — how often the *values* actually change while polling flat
+  out. Under a static load the reported fields are quantised, so identical
+  readings are expected; the change-gap histogram tells "firmware is slow" apart
+  from "nothing happened to measure".
+
+```bash
+python -m tools.probe_rate --mac 26:04:18:01:12:F4          # needs the BLE host
+python -m tools.probe_rate --mac ... --listen 60 --reads 400
+python -m tools.probe_rate --selftest                       # no radio
+```
+
+Run it twice — once at idle, once while toggling a known load. A static load has
+no value transitions to time, and the median change gap is the best available
+estimate of the firmware's own update period.
+
+### Measured on a YM-S1-BES (2026-11, Pi 4, BlueZ 5.82)
+
+| question | result |
+|---|---|
+| Does it push on its own? | **No.** 45 s subscribed with zero requests: 0 notifications. Request/response only. |
+| Negotiated ATT MTU | **23** — the device answers `Exchange MTU` with 23, so a 38-byte reply is always 2 notify PDUs (20 + 18). |
+| Negotiated connection interval | **22.5 ms** (requested 60 ms) |
+| Serial read rate @ 22.5 ms | 14 reads/s, p50 latency 67 ms |
+| Serial read rate @ forced 7.5 ms | **34.4 reads/s**, p50 29.4 ms, p95 30.6 ms |
+| Reply depth | the firmware queues **3** outstanding reads, then drops the rest; recovers immediately |
+| Burst rate (3 in flight) | ~44 reads/s |
+| Value tick | **1.005 s median** gap, phase-locked (changes land at a stable phase offset inside each second) |
+| Accumulator tick | advances on a **60.0 s** period (±16 ms over 130 s), not continuously |
+
+The one-second tick is a **sample-and-hold**: every field updates at the same
+instant, once per second. Nothing is gained by polling faster than 1 Hz for
+fresh values — at 34 reads/s you get 33 identical repeats per real update.
+Polling faster only helps when you need the *same* value sooner after the tick,
+i.e. latency, not resolution.
+
+### Capturing every update
+
+Reading once per second is not enough. The device tick (firmware, phase-locked)
+and the exporter tick (host clock, drifting) are independent, so a 1.0 s period
+beats against the device: every so often one update is skipped and the next is
+sampled twice. The fix is a period that is not equal to the tick, with more than
+one probe inside it.
+
+Defaults: `--interval 0.8 --reads-per-cycle 2` → probes at t and t+0.4, i.e.
+**2.5 reads/s** against a 1 Hz device. Any update can only be missed if it falls
+inside the 0.4 s gap between probes *and* the next cycle's first probe is late.
+
+| `--interval` | `--reads-per-cycle` | reads/s | misses possible |
+|---|---|---|---|
+| 1.0 | 1 | 1.0 | **yes — beats with the device** |
+| 0.8 | 2 (default) | 2.5 | only under jitter |
+| 0.4 | 1 | 2.5 | equivalent, steadier cadence |
+| 0.2 | 1 | 5.0 | none in practice, 2x the airtime |
+
+Reads are scheduled on absolute deadlines, so a slow read does not accumulate
+drift, and falling more than a full cycle behind resynchronises instead of
+replaying a backlog.
+
+Two counters report the result. `yunmu_device_tick_total` counts value changes
+and therefore only moves while the load moves — it is a corroboration signal, not
+a health signal. `yunmu_sampling_gaps_total` counts reads that came more than one
+hold (1 s) after the previous read, which is load-independent and is what to alert
+on. Miss detection deliberately does *not* try to infer "how many updates were
+lost" from observed gaps: a meter on a constant load produces no value changes at
+all, so any such estimate would be fiction.
+
+Connection interval is worth setting explicitly for latency: 22.5 → 7.5 ms
+halves round-trip time (67 → 29 ms) and doubles sustainable reads, but does not
+change the 1 Hz update rate. It also costs airtime on a shared 2.4 GHz band.
+
 ## Device-side energy
 
 `yunmu_energy_device_kwh` is the meter's own cumulative total, scaled from its
@@ -209,6 +305,25 @@ the vendor app: 0.16 kWh at count 607). Unlike `yunmu_energy_kwh` it survives an
 exporter restart and is only zeroed when the meter's total is cleared in the app.
 
 The accumulator wraps at 65536 counts (~17 kWh).
+
+Measured behaviour (2026-11, 130 s at ~15 reads/s each):
+
+| meter | mean power | counter | verdict |
+|---|---|---|---|
+| idle, no load | 0.000 W | 624 → 624 (0 steps) | does not free-run |
+| ~3.6 W load | 3.646 W | 185 → 187 (+2) | **exactly 60.0 s per step** (±16 ms) |
+
+The accumulator is a 60-second accumulator, not a per-sample one: it integrates
+over a fixed 60 s window and emits the result as a whole count. It does not
+advance without load, so it is measuring real energy rather than free-running.
+
+The implied scale at this load is 0.066 Wh/count (0.13 Wh delivered per 2
+counts), which is **4x smaller than `WH_PER_COUNT = 0.26`**. High-load
+observations in *Known gaps* go the other way (counter advancing *slower* than
+0.26 predicts). Two deviations in opposite directions cannot both be explained
+by a single scale factor, so `WH_PER_COUNT` should be treated as unvalidated
+outside the range it was fitted to. Use `yunmu_energy_kwh` for accounting and
+`yunmu_counter_total` only as a coarse liveness signal.
 
 ## Known gaps
 

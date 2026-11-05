@@ -67,5 +67,6 @@ raw accumulator — it wraps at 65536 and must not be rate()'d.
 - The exporter holds the meter's only BLE connection, so the phone app cannot
   connect while it runs. `sudo systemctl stop yunmu-meter` to hand the link back;
   the meter usually needs a power cycle before it will advertise again.
-- The exporter polls every 2 s by default (`--interval`). The device itself
-  updates roughly once a second, so polling faster gains nothing.
+- The exporter polls every 2 s by default (`--interval`). Whether the device
+  refreshes its readings faster than that is an open question: measure it with
+  `tools/probe_rate.py` before lowering the interval.

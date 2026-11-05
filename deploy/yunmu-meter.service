@@ -6,7 +6,7 @@ Wants=bluetooth.service
 [Service]
 Type=simple
 Environment=PYTHONPATH=/opt/yunmu-ble-meter
-ExecStart=/usr/bin/python3 -m yunmu_ble_meter.cli --config /etc/yunmu-meter/meters.toml --interval 5 --port 9103
+ExecStart=/usr/bin/python3 -m yunmu_ble_meter.cli --config /etc/yunmu-meter/meters.toml --interval 0.8 --port 9103
 Restart=always
 RestartSec=10
 User=root

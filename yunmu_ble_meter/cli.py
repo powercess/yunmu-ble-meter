@@ -23,7 +23,7 @@ import threading
 import time
 
 from . import protocol
-from .metrics import MeterMetrics, collector_loop, multi_collector_loop
+from .metrics import MeterMetrics, multi_collector_loop, READ_COST_SECONDS
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -43,7 +43,20 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help="TOML file listing meters and their protocol parameters",
     )
-    ap.add_argument("--interval", type=float, default=2.0, help="poll interval, seconds")
+    ap.add_argument(
+        "--interval",
+        type=float,
+        default=0.8,
+        help="sampling period, seconds (default 0.8: two probes per 1 Hz device "
+        "update, which is the cheapest cadence that observes every record)",
+    )
+    ap.add_argument(
+        "--reads-per-cycle",
+        type=int,
+        default=2,
+        help="reads per sampling period; the device holds each record for 1 s, "
+        "so 2 keeps the worst-case gap under one tick",
+    )
     ap.add_argument("--port", type=int, default=9103, help="exporter port")
     ap.add_argument("--host", default="0.0.0.0", help="exporter bind address")
     ap.add_argument(
@@ -132,6 +145,13 @@ def main(argv: list[str] | None = None) -> int:
         print("yunmu-meter: give --mac or --config", file=sys.stderr)
         return 2
 
+    if args.interval <= 0:
+        print("yunmu-meter: --interval must be positive", file=sys.stderr)
+        return 2
+    if args.reads_per_cycle < 1:
+        print("yunmu-meter: --reads-per-cycle must be at least 1", file=sys.stderr)
+        return 2
+
     _install_profiles(entries, args.learn)
 
     metrics = MeterMetrics()
@@ -171,18 +191,31 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(f"dashboard on {exporter.dashboard_url}", flush=True)
 
-    if len(meters) == 1:
-        target = collector_loop
-        worker = threading.Thread(
-            target=target, args=(meters[0], metrics, args.interval, stop), daemon=True
+    # One adapter serialises reads, and a read costs ~70 ms at the negotiated
+    # 22.5 ms interval. Asking for more than the link can carry silently turns
+    # into sampling gaps, which is exactly what the tick counters then report,
+    # so warn up front instead of only at scrape time.
+    wanted = len(meters) * args.reads_per_cycle / args.interval
+    budget = 1.0 / READ_COST_SECONDS
+    if wanted > budget * 0.8:
+        print(
+            f"yunmu-meter: warning: {len(meters)} meters x {args.reads_per_cycle}"
+            f" reads / {args.interval}s = {wanted:.1f} reads/s, near the ~{budget:.0f}/s"
+            " a single adapter sustains. Expect sampling gaps; raise --interval,"
+            " lower --reads-per-cycle, or split meters across adapters.",
+            file=sys.stderr,
+            flush=True,
         )
-    else:
-        worker = threading.Thread(
-            target=multi_collector_loop,
-            args=(meters, metrics, args.interval, stop),
-            kwargs={"on_reading": on_reading if args.do_print else None},
-            daemon=True,
-        )
+
+    worker = threading.Thread(
+        target=multi_collector_loop,
+        args=(meters, metrics, args.interval, stop),
+        kwargs={
+            "on_reading": on_reading if args.do_print else None,
+            "reads_per_cycle": args.reads_per_cycle,
+        },
+        daemon=True,
+    )
     worker.start()
     try:
         while not stop.is_set():
