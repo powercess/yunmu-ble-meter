@@ -44,6 +44,17 @@ sudo promtool check config /etc/prometheus/prometheus.yml
 sudo systemctl reload prometheus
 ```
 
+With Prometheus in a container, run Prometheus with `--web.enable-lifecycle`
+and reload instead of restarting — a restart discards the scrape state and
+leaves a gap of a few tens of seconds:
+
+```bash
+curl -X POST -u admin:"$PW" http://127.0.0.1:53187/-/reload
+```
+
+A failed reload keeps the old config running, so confirm the new value actually
+took effect via `/api/v1/targets` (`scrapeInterval`).
+
 Verify the target is up:
 
 ```bash
