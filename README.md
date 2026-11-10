@@ -32,6 +32,9 @@ Prometheus endpoint and a minimal TOML parser. No Python runtime, no D-Bus
 bindings, no HTTP framework. Build with `cargo build --release`; see
 [`rust/README.md`](rust/README.md) and `deploy/yunmu-meter-rs.service`.
 
+MCU sizing for the embedded port (ESP32-S3 probe, projections to C3/C2/H2):
+[`docs/esp32-sizing.md`](docs/esp32-sizing.md).
+
 Resource measurement helper: `tools/measure_resources.sh PID SECONDS`; measured
 comparison (RSS 28.5 MB → 2.96 MB, CPU 10.4 % → 1.53 %) in
 [`docs/benchmark.md`](docs/benchmark.md).

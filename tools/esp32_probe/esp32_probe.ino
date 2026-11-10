@@ -15,6 +15,8 @@
 #include <BLEAdvertisedDevice.h>
 #include "esp_system.h"
 #include "esp_heap_caps.h"
+#include "esp_freertos_hooks.h"
+#include "stats.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -23,8 +25,8 @@ static BLEScan *scan = nullptr;
 static volatile uint32_t idle0 = 0, idle1 = 0;
 static volatile uint32_t synth_ops = 0;
 
-static void idle_hook0() { idle0++; }
-static void idle_hook1() { idle1++; }
+static bool idle_hook0() { idle0++; return true; }
+static bool idle_hook1() { idle1++; return true; }
 
 // ---------------------------------------------------------------- protocol
 
@@ -114,6 +116,10 @@ void setup() {
   delay(5000);
   uint32_t b0 = idle0, b1 = idle1;
   report("REF", b0 - a0, b1 - a1, millis() - t0);
+  heap_report();
+
+  static Snap snap_a[24], snap_b[24];
+  int na = take_snapshot(snap_a, 24);
 
   // phase 2: bring up the same stacks as the collector
   WiFi.mode(WIFI_STA);  // allocates Wi-Fi/lwIP, no association
@@ -129,11 +135,14 @@ void setup() {
   xTaskCreatePinnedToCore(synth_task, "synth", 4096, nullptr, 1, nullptr, 1);
 
   delay(2000);
+  na = take_snapshot(snap_a, 24);
   uint32_t c0 = idle0, c1 = idle1;
   uint32_t t1 = millis();
   delay(10000);
   uint32_t d0 = idle0, d1 = idle1;
   report("LOAD", d0 - c0, d1 - c1, millis() - t1);
+  int nb = take_snapshot(snap_b, 24);
+  print_cpu_delta(snap_a, na, snap_b, nb, millis() - t1);
   Serial.printf("SYNTH ops=%u\n", (unsigned)synth_ops);
   heap_report();
 }
