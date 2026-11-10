@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::process::exit;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -17,7 +17,6 @@ use zbus::message::Type as MessageType;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 use zbus::{Connection, MatchRule, MessageStream, Proxy};
 
-const SERVICE_UUID: &str = "49535343-fe7d-4ae5-8fa9-9fafd205e455";
 const NOTIFY_UUID: &str = "49535343-1e4d-4bd9-ba61-23c647249616";
 const WRITE_UUID: &str = "49535343-8841-43f4-a8d4-ecbe34729bb3";
 const BLUEZ: &str = "org.bluez";
@@ -430,7 +429,6 @@ fn http_loop(listener: TcpListener, shared: Arc<Mutex<Shared>>) {
 
 struct Meter {
     mac: String,
-    name: String,
     payload: [u8; 3],
     xor: u8,
     conn: Option<Connection>,
@@ -439,6 +437,7 @@ struct Meter {
     write_path: Option<OwnedObjectPath>,
     stream: Option<MessageStream>,
     notify_started: bool,
+    ready: bool,
     buffer: Vec<u8>,
     failures: u32,
     offline: bool,
@@ -450,7 +449,6 @@ impl Meter {
     fn new(entry: &ConfigEntry, index: usize) -> Self {
         Self {
             mac: entry.mac.clone(),
-            name: entry.name.clone(),
             payload: entry.payload,
             xor: entry.xor,
             conn: None,
@@ -459,6 +457,7 @@ impl Meter {
             write_path: None,
             stream: None,
             notify_started: false,
+            ready: false,
             buffer: Vec::with_capacity(256),
             failures: 0,
             offline: true,
@@ -489,13 +488,12 @@ impl Meter {
         let om = Proxy::new(conn, BLUEZ, "/", "org.freedesktop.DBus.ObjectManager")
             .await
             .map_err(|e| e.to_string())?;
-        let reply = timeout(Duration::from_secs(5), om.call("GetManagedObjects", &()))
-            .await
-            .map_err(|_| "GetManagedObjects timeout".to_string())?
-            .map_err(|e| e.to_string())?;
-        let body = reply.body();
-        body.deserialize::<HashMap<OwnedObjectPath, HashMap<String, HashMap<String, OwnedValue>>>>()
-            .map_err(|e| e.to_string())
+        let objs: HashMap<OwnedObjectPath, HashMap<String, HashMap<String, OwnedValue>>> =
+            timeout(Duration::from_secs(5), om.call("GetManagedObjects", &()))
+                .await
+                .map_err(|_| "GetManagedObjects timeout".to_string())?
+                .map_err(|e| e.to_string())?;
+        Ok(objs)
     }
 
     async fn resolve(&mut self) -> Result<bool, String> {
@@ -552,13 +550,13 @@ impl Meter {
             .map_err(|e| e.to_string())?;
         let _ = timeout(
             Duration::from_secs(2),
-            adapter.call("StartDiscovery", &()),
+            adapter.call::<_, _, ()>("StartDiscovery", &()),
         )
         .await;
         sleep(Duration::from_secs(seconds)).await;
         let _ = timeout(
             Duration::from_secs(2),
-            adapter.call("StopDiscovery", &()),
+            adapter.call::<_, _, ()>("StopDiscovery", &()),
         )
         .await;
         Ok(())
@@ -582,7 +580,7 @@ impl Meter {
             let mut last_err = None;
             let mut ok = false;
             for attempt in 0..3u64 {
-                let call = timeout(Duration::from_secs(8), dev.call("Connect", &())).await;
+                let call = timeout(Duration::from_secs(8), dev.call::<_, _, ()>("Connect", &())).await;
                 match call {
                     Ok(Ok(_)) => {}
                     Ok(Err(e)) => last_err = Some(e.to_string()),
@@ -611,6 +609,7 @@ impl Meter {
             return Err("GATT characteristics not exposed".to_string());
         }
         self.start_notify().await?;
+        self.ready = true;
         Ok(())
     }
 
@@ -620,19 +619,14 @@ impl Meter {
         let props = Proxy::new(conn, BLUEZ, path.as_str(), PROPS_IFACE)
             .await
             .map_err(|e| e.to_string())?;
-        let reply = timeout(
+        let value: OwnedValue = timeout(
             Duration::from_secs(5),
-            props.call("Get", &(iface, prop)),
+            props.call::<_, _, OwnedValue>("Get", &(iface, prop)),
         )
         .await
         .map_err(|_| "property get timeout".to_string())?
         .map_err(|e| e.to_string())?;
-        reply
-            .body()
-            .deserialize::<OwnedValue>()
-            .ok()
-            .and_then(|v| bool::try_from(v).ok())
-            .ok_or_else(|| "property not a bool".to_string())
+        bool::try_from(value).map_err(|_| "property not a bool".to_string())
     }
 
     async fn wait_connected(&self, secs: u64) -> bool {
@@ -662,7 +656,7 @@ impl Meter {
             .map_err(|e| e.to_string())?;
         let mut last = String::new();
         for attempt in 0..4u64 {
-            match timeout(Duration::from_secs(5), chr.call("StartNotify", &())).await {
+            match timeout(Duration::from_secs(5), chr.call::<_, _, ()>("StartNotify", &())).await {
                 Ok(Ok(_)) => {
                     last.clear();
                     break;
@@ -702,7 +696,7 @@ impl Meter {
         let options: HashMap<String, OwnedValue> = HashMap::new();
         timeout(
             Duration::from_secs(5),
-            chr.call("WriteValue", &(frame.to_vec(), options)),
+            chr.call::<_, _, ()>("WriteValue", &(frame.to_vec(), options)),
         )
         .await
         .map_err(|_| "WriteValue timeout".to_string())?
@@ -751,17 +745,26 @@ impl Meter {
         self.start_notify().await?;
         self.buffer.clear();
         let mut last_err = String::new();
+        if !self.ready {
+            self.ready = self.wait_connected(2).await;
+        }
         for attempt in 0..4u64 {
-            if self.wait_connected(2).await {
+            if self.ready {
                 match self.write_frame(frame).await {
                     Ok(()) => {
                         last_err.clear();
                         break;
                     }
-                    Err(e) => last_err = e,
+                    Err(e) => {
+                        last_err = e;
+                        self.ready = false;
+                    }
                 }
             } else {
                 last_err = "not connected".to_string();
+            }
+            if !self.ready {
+                self.ready = self.wait_connected(2).await;
             }
             sleep(Duration::from_millis(300 * (attempt + 1))).await;
         }
@@ -810,18 +813,19 @@ impl Meter {
             if let Some(path) = self.notify_path.clone() {
                 if self.notify_started {
                     if let Ok(chr) = Proxy::new(&conn, BLUEZ, path.as_str(), CHR_IFACE).await {
-                        let _ = timeout(Duration::from_secs(5), chr.call("StopNotify", &())).await;
+                        let _ = timeout(Duration::from_secs(5), chr.call::<_, _, ()>("StopNotify", &())).await;
                     }
                 }
             }
             if let Some(path) = self.dev_path.clone() {
                 if let Ok(dev) = Proxy::new(&conn, BLUEZ, path.as_str(), DEV_IFACE).await {
-                    let _ = timeout(Duration::from_secs(5), dev.call("Disconnect", &())).await;
+                    let _ = timeout(Duration::from_secs(5), dev.call::<_, _, ()>("Disconnect", &())).await;
                 }
             }
             sleep(Duration::from_millis(300)).await;
         }
         self.notify_started = false;
+        self.ready = false;
         self.stream = None;
         self.dev_path = None;
         self.notify_path = None;

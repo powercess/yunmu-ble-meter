@@ -32,7 +32,9 @@ Prometheus endpoint and a minimal TOML parser. No Python runtime, no D-Bus
 bindings, no HTTP framework. Build with `cargo build --release`; see
 [`rust/README.md`](rust/README.md) and `deploy/yunmu-meter-rs.service`.
 
-Resource measurement helper: `tools/measure_resources.sh PID SECONDS`.
+Resource measurement helper: `tools/measure_resources.sh PID SECONDS`; measured
+comparison (RSS 28.5 MB → 2.96 MB, CPU 10.4 % → 1.53 %) in
+[`docs/benchmark.md`](docs/benchmark.md).
 
 ## Cloud path (reverse engineered)
 
