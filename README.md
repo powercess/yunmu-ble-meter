@@ -196,6 +196,24 @@ GATT characteristics are looked up inside the device's own subtree, so several
 collectors can share one adapter. Links are serialised internally because the
 controller refuses a new link while the previous one is tearing down.
 
+### Unknown meter: brute-force the two constants
+
+`tools/learn_meter.py` recovers both per-device values over BLE when no capture
+is available. The read payload is always `[s, s ^ 0x08, s]`, so only 256
+candidates exist; the correct one is the only candidate whose reply frame passes
+the MAC-derived CRC. The response XOR is then recovered from that reply.
+
+```bash
+sudo systemctl stop yunmu-meter        # exclusive use of the adapter
+PYTHONPATH=/opt/yunmu-ble-meter python3 tools/learn_meter.py \
+    --mac 26:01:15:04:2F:96 --timeout 0.7 --settle 0.2
+sudo systemctl start yunmu-meter
+```
+
+The tool prints the matching `[[meter]]` block. Measured: 64 s for a device whose
+constant is `0x5A` (worst case about 256 x (timeout + settle)).
+
+
 ## Systemd
 
 ```bash
