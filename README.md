@@ -39,6 +39,13 @@ Resource measurement helper: `tools/measure_resources.sh PID SECONDS`; measured
 comparison (RSS 28.5 MB → 2.96 MB, CPU 10.4 % → 1.53 %) in
 [`docs/benchmark.md`](docs/benchmark.md).
 
+## Central controller (hub)
+
+`hub/` contains the TypeScript controller that manages collectors, device
+registry, scan sessions and learning jobs: Fastify API, embedded MQTT broker,
+SQLite storage and a React + shadcn/ui console. See
+[`hub/README.md`](hub/README.md) and [`hub/docs/protocol.md`](hub/docs/protocol.md).
+
 ## Cloud path (reverse engineered)
 
 The vendor cloud was also reversed from captured traffic, including the

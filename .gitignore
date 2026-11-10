@@ -10,3 +10,8 @@ dist/
 deploy/meters.toml
 secrets.local.*
 *.local.json
+
+# hub (TypeScript controller)
+hub/node_modules/
+hub/packages/*/dist/
+hub/data/
