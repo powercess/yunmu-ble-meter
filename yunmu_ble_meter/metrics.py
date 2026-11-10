@@ -390,6 +390,7 @@ def multi_collector_loop(
     """
     offline: set[str] = set()
     skip_until: dict[str, float] = {}
+    failures: dict[str, int] = {}
     per_cycle = max(1, int(reads_per_cycle))
     offsets = _due_times(interval, per_cycle)
     next_slot = time.monotonic()
@@ -413,6 +414,7 @@ def multi_collector_loop(
                         meter.connect()
                         offline.discard(mac)
                     reading = meter.read()
+                    failures[mac] = 0
                     metrics.record_for(mac, reading, time.monotonic() - started)
                     if on_reading is not None:
                         on_reading(mac, reading)
@@ -425,6 +427,17 @@ def multi_collector_loop(
                         meter.close()
                     except Exception:
                         pass
+                    failures[mac] = failures.get(mac, 0) + 1
+                    # A long-lived D-Bus connection can wedge after repeated
+                    # link failures; rebuild it instead of retrying forever.
+                    if failures[mac] >= 3:
+                        reset = getattr(meter, "reset", None)
+                        if callable(reset):
+                            try:
+                                reset()
+                            except Exception:
+                                pass
+                        failures[mac] = 0
                     skip_until[mac] = time.monotonic() + reconnect_backoff
         next_slot += interval
         behind = time.monotonic() - next_slot

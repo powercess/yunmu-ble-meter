@@ -54,6 +54,8 @@ class BleMeter:
         mac: str,
         *,
         connect_timeout: float = 20.0,
+        connect_call_timeout: float = 8.0,
+        dbus_timeout: float = 5.0,
         notify_settle: float = 0.8,
         reply_timeout: float = 5.0,
         reconnect_backoff: float = 1.5,
@@ -67,6 +69,8 @@ class BleMeter:
         #: per-device protocol parameters (read command + payload obfuscation)
         self.profile = protocol.profile_for(self.mac)
         self.connect_timeout = connect_timeout
+        self.connect_call_timeout = connect_call_timeout
+        self.dbus_timeout = dbus_timeout
         self.notify_settle = notify_settle
         self.reply_timeout = reply_timeout
         #: the meter aborts rapid reconnects, so attempts are spaced out
@@ -82,6 +86,7 @@ class BleMeter:
 
         self._bus: dbus.SystemBus | None = None
         self._loop: GLib.MainLoop | None = None
+        self._signal_match = None
         self._buffer = bytearray()
         self._frames: list[bytes] = []
         self._notify_started = False
@@ -94,12 +99,52 @@ class BleMeter:
     def _ensure_loop(self) -> None:
         if self._bus is None:
             dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
-            self._bus = dbus.SystemBus()
+            # one connection per meter: a wedged bus can then be dropped and
+            # recreated without affecting the other meters, and signal handlers
+            # registered on one link never fire for another meter's traffic.
+            self._bus = dbus.SystemBus(private=True)
             self._loop = GLib.MainLoop()
+
+    def _drop_signal_match(self) -> None:
+        """Remove the PropertiesChanged handler registered by connect().
+
+        BlueZ emits properties for every connection attempt; without this the
+        handler list grows on every reconnect and each signal is dispatched to
+        thousands of stale callbacks, which starves D-Bus method replies (they
+        then hit the 25 s default timeout).
+        """
+        match = self._signal_match
+        self._signal_match = None
+        if match is not None:
+            try:
+                match.remove()
+            except Exception:
+                pass
+
+    def reset(self) -> None:
+        """Drop the bus and all cached state so the next connect starts clean."""
+        try:
+            self.close()
+        except Exception:
+            pass
+        self._drop_signal_match()
+        try:
+            if self._bus is not None:
+                self._bus.close()
+        except Exception:
+            pass
+        self._bus = None
+        self._loop = None
+        self._buffer.clear()
+        self._frames.clear()
+        self._notify_started = False
+        self._device_path = None
+        self._notify_path = None
+        self._write_path = None
 
     def _objects(self) -> dict:
         om = dbus.Interface(self._bus.get_object(BLUEZ, "/"), OM_IFACE)
-        return om.GetManagedObjects()
+        return om.GetManagedObjects(timeout=self.dbus_timeout)
 
     def _adapter_path(self) -> str:
         for path, ifaces in self._objects().items():
@@ -234,7 +279,7 @@ class BleMeter:
                     obj = dbus.Interface(
                         self._bus.get_object(BLUEZ, self._device_path), DEV_IFACE
                     )
-                    obj.Connect()
+                    obj.Connect(timeout=self.connect_call_timeout)
                 except Exception as exc:
                     last_exc = exc
                     self._pump(self.reconnect_backoff * (attempt + 1))
@@ -265,7 +310,10 @@ class BleMeter:
             else:
                 raise TransportError("GATT characteristics not exposed by the device")
 
-        self._bus.add_signal_receiver(
+        # Re-registering on every connect() leaked one handler per attempt in
+        # earlier builds; drop the previous match first.
+        self._drop_signal_match()
+        self._signal_match = self._bus.add_signal_receiver(
             self._on_properties,
             dbus_interface=PROPS_IFACE,
             signal_name="PropertiesChanged",
@@ -285,8 +333,8 @@ class BleMeter:
         """
         props = dbus.Interface(self._bus.get_object(BLUEZ, self._device_path), PROPS_IFACE)
         try:
-            return bool(props.Get(DEV_IFACE, "Connected")) and bool(
-                props.Get(DEV_IFACE, "ServicesResolved")
+            return bool(props.Get(DEV_IFACE, "Connected", timeout=self.dbus_timeout)) and bool(
+                props.Get(DEV_IFACE, "ServicesResolved", timeout=self.dbus_timeout)
             )
         except Exception:
             return False
@@ -302,7 +350,7 @@ class BleMeter:
         props = dbus.Interface(self._bus.get_object(BLUEZ, self._device_path), PROPS_IFACE)
         while time.monotonic() < deadline:
             try:
-                if props.Get(DEV_IFACE, "Connected"):
+                if props.Get(DEV_IFACE, "Connected", timeout=self.dbus_timeout):
                     return True
             except Exception:
                 pass
@@ -319,7 +367,7 @@ class BleMeter:
         last_exc: Exception | None = None
         for attempt in range(4):
             try:
-                char.StartNotify()
+                char.StartNotify(timeout=self.dbus_timeout)
                 last_exc = None
                 break
             except Exception as exc:
@@ -343,7 +391,7 @@ class BleMeter:
                 if not self._resolve():
                     return
             dev = dbus.Interface(self._bus.get_object(BLUEZ, self._device_path), DEV_IFACE)
-            dev.Connect()
+            dev.Connect(timeout=self.connect_call_timeout)
         except Exception:
             return
         self._wait_connected(5.0)
@@ -356,16 +404,16 @@ class BleMeter:
     def _scan(self, seconds: float) -> None:
         adapter = dbus.Interface(self._bus.get_object(BLUEZ, self._adapter_path()), ADAPTER_IFACE)
         try:
-            adapter.SetDiscoveryFilter({"Transport": dbus.String("le")})
+            adapter.SetDiscoveryFilter({"Transport": dbus.String("le")}, timeout=self.dbus_timeout)
         except Exception:
             pass
         try:
-            adapter.StartDiscovery()
+            adapter.StartDiscovery(timeout=self.dbus_timeout)
         except Exception:
             pass
         self._pump(seconds)
         try:
-            adapter.StopDiscovery()
+            adapter.StopDiscovery(timeout=self.dbus_timeout)
         except Exception:
             pass
 
@@ -376,6 +424,7 @@ class BleMeter:
         char.WriteValue(
             dbus.Array(frame, signature="y"),
             dbus.Dictionary({}, signature="sv"),
+            timeout=self.dbus_timeout,
         )
 
     def transact(self, frame: bytes, timeout: float | None = None) -> bytes:
@@ -491,10 +540,11 @@ class BleMeter:
         still in flight, which shows up as "Failed to initiate write" or
         "le-connection-abort-by-local" on the following connection.
         """
+        self._drop_signal_match()
         try:
             if self._notify_path and self._notify_started:
                 char = dbus.Interface(self._bus.get_object(BLUEZ, self._notify_path), CHR_IFACE)
-                char.StopNotify()
+                char.StopNotify(timeout=self.dbus_timeout)
         except Exception:
             pass
         self._notify_started = False
@@ -505,11 +555,11 @@ class BleMeter:
                 self._bus.get_object(BLUEZ, self._device_path), PROPS_IFACE
             )
             dev = dbus.Interface(self._bus.get_object(BLUEZ, self._device_path), DEV_IFACE)
-            dev.Disconnect()
+            dev.Disconnect(timeout=self.dbus_timeout)
             deadline = time.monotonic() + self.disconnect_timeout
             while time.monotonic() < deadline:
                 try:
-                    if not props.Get(DEV_IFACE, "Connected"):
+                    if not props.Get(DEV_IFACE, "Connected", timeout=self.dbus_timeout):
                         break
                 except Exception:
                     break

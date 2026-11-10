@@ -17,6 +17,7 @@ brute force against the first reply (see ``protocol.guess_payload_xor``).
 from __future__ import annotations
 
 import argparse
+import os
 import signal
 import sys
 import threading
@@ -59,6 +60,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ap.add_argument("--port", type=int, default=9103, help="exporter port")
     ap.add_argument("--host", default="0.0.0.0", help="exporter bind address")
+    ap.add_argument(
+        "--watchdog-seconds",
+        type=float,
+        default=300.0,
+        help="exit so systemd can restart when no meter has produced a reading "
+        "for this long; 0 disables (default 300)",
+    )
     ap.add_argument(
         "--learn",
         action="store_true",
@@ -121,6 +129,37 @@ def _install_profiles(entries: list[dict], learn: bool) -> None:
             or base.observed_read_payload,
             observed_payload_xor=observed_xor or base.observed_payload_xor,
         )
+
+
+def _watchdog_loop(metrics, threshold: float, stop: threading.Event, started_at: float) -> None:
+    """Exit the process when the collector has silently wedged.
+
+    ``Restart=always`` only helps when the process dies; a wedged D-Bus client
+    keeps running while every read fails. If no meter has produced a reading for
+    ``threshold`` seconds (or none ever has), exit and let systemd restart us.
+    """
+    grace = started_at + max(threshold, 120.0)
+    interval = min(30.0, threshold / 2.0)
+    while not stop.wait(interval):
+        now = time.time()
+        last = max((state.last_ts for state in metrics.devices), default=0.0)
+        if last == 0.0:
+            if now >= grace:
+                print(
+                    f"yunmu-meter: watchdog: no successful read in {now - started_at:.0f}s; "
+                    "exiting for systemd restart",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                os._exit(1)
+        elif now - last > threshold:
+            print(
+                f"yunmu-meter: watchdog: no successful read for {now - last:.0f}s; "
+                "exiting for systemd restart",
+                file=sys.stderr,
+                flush=True,
+            )
+            os._exit(1)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -217,6 +256,12 @@ def main(argv: list[str] | None = None) -> int:
         daemon=True,
     )
     worker.start()
+    if args.watchdog_seconds > 0:
+        threading.Thread(
+            target=_watchdog_loop,
+            args=(metrics, args.watchdog_seconds, stop, time.time()),
+            daemon=True,
+        ).start()
     try:
         while not stop.is_set():
             time.sleep(0.5)
