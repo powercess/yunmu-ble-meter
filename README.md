@@ -24,6 +24,16 @@ $ yunmu-meter --mac 26:04:18:01:12:F4
   locally integrated energy counter, so energy accounting does not depend on the
   device's own accumulator.
 
+## Rust implementation (edge)
+
+`rust/` contains a single-binary replacement for the Python collector, aimed at
+edge devices: BlueZ via zbus, a current-thread tokio runtime, a hand-written
+Prometheus endpoint and a minimal TOML parser. No Python runtime, no D-Bus
+bindings, no HTTP framework. Build with `cargo build --release`; see
+[`rust/README.md`](rust/README.md) and `deploy/yunmu-meter-rs.service`.
+
+Resource measurement helper: `tools/measure_resources.sh PID SECONDS`.
+
 ## Cloud path (reverse engineered)
 
 The vendor cloud was also reversed from captured traffic, including the
