@@ -24,6 +24,20 @@ $ yunmu-meter --mac 26:04:18:01:12:F4
   locally integrated energy counter, so energy accounting does not depend on the
   device's own accumulator.
 
+## Cloud path (reverse engineered)
+
+The vendor cloud was also reversed from captured traffic, including the
+request/response encryption:
+
+- `docs/cloud-api.md` — REST/plugin endpoints, AES-CBC envelope, `code` →
+  BLE payload encoding, response upload/decoding, signatures.
+- `docs/payload-derivation.md` — dataset and the (negative) search for the
+  per-device payload constant; it appears to be a factory secret, not derived
+  from SN/MAC.
+- `scripts/cloud_crypto.py` — encrypt/decrypt a captured `bleCommandV1` body
+  (credentials from `YUNMU_API_KEY` / `YUNMU_API_SECRET`).
+- `scripts/search_payload_rule.py` — brute-force harness used for the search.
+
 ## What it does not do
 
 - **Switch the relay.** This model exposes no on/off control through the app and
@@ -346,6 +360,16 @@ outside the range it was fitted to. Use `yunmu_energy_kwh` for accounting and
   displayed total, so something beyond the BLE frame is involved (most likely
   the companion cloud call). Do not rely on `clear()` to zero the accumulator;
   track energy locally via `yunmu_energy_kwh` instead.
+
+- **Per-device payload source unknown.** The read payload byte `s` and the
+  response XOR are fixed per meter, but no relation to SN, MAC or cloud ids was
+  found (exhaustive CRC8, all-polynomial CRC16, common hashes; see
+  `docs/payload-derivation.md`). They behave like factory secrets stored in the
+  vendor cloud; a new meter has to be captured once.
+- **Cloud command issuance cannot be forged locally.** `bleCommandV1` request
+  signatures are issued by the vendor REST API and bound to device + timestamp.
+  A fresh timestamp with a captured signature returns `400 无效请求`; only
+  captured/replayed values work.
 
 ## Scope
 

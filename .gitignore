@@ -8,3 +8,5 @@ dist/
 
 # real device config (contains site-specific MACs/names)
 deploy/meters.toml
+secrets.local.*
+*.local.json
