@@ -59,6 +59,11 @@ payload = [0xA4, 0xAC, 0xA4]
 | `s` = AES S-box(字节) | 输入变体各位置 | 无 |
 | `s` = 字节和 / 异或折叠 | 输入变体 | 无 |
 | `(s, xor)` = CRC16/hash 的 16 位组合 | 移位组合 | 无 |
+| CRC8/CRC16 + 任意固定 `xorout` | 全部 poly，xorout 由 4 台一致性反推 | 无 |
+| CRC16 使用 MAC 自身派生的 init/poly | 帧层同一套 `(init, poly)` | 无 |
+| 哈希/CRC 带固定盐（`yunmu`, `iyunmu`, appid, 型号等 16 个候选） | MD5/SHA1/SHA256 × 字节位 × CRC8 全 poly | 无 |
+| HMAC(variant1, variant2) | MD5/SHA1/SHA256 × 字节位 | 无 |
+| AES-ECB(hash(variant)[:16], 固定/变体明文) | MD5/SHA1/SHA256 | 无 |
 
 输入变体包括：SN 全串、`SN[2:]`、`SN[-4:]`、`SN[-4:]` 的 hex 字节、MAC 字节、
 MAC 反序、MAC hex 串（大小写/带冒号）、MAC+SN、SN+MAC、`basicDetail` 的 `id`、
