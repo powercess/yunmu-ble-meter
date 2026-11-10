@@ -40,21 +40,21 @@ flowchart LR
 
 ## Quickstart
 
-Requirements: Node 22.5+ (uses `node:sqlite`), pnpm 11.
+Requirements: [Bun](https://bun.sh) 1.3+ (runtime, package manager, `bun:sqlite`, `bun test`).
 
 ```bash
-pnpm install
-pnpm -r build
+bun install
+bun run build
 
 # terminal 1 — hub (HTTP :8080, MQTT :1883, SQLite under packages/server/data)
-pnpm --filter @yunmu/server start
+bun run --filter @yunmu/server start
 
 # terminal 2 — one simulated collector with fake meters
-pnpm --filter @yunmu/simulator start
+bun run --filter @yunmu/simulator start
 ```
 
 Open <http://127.0.0.1:8080>. The server serves `packages/web/dist`; for UI
-development run `pnpm --filter @yunmu/web dev` (Vite proxies `/api` to :8080).
+development run `bun run --filter @yunmu/web dev` (Vite proxies `/api` to :8080).
 
 Demo flow:
 

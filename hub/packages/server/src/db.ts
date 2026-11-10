@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { Database } from "bun:sqlite";
 
 import type {
   DesiredDevice,
@@ -80,11 +80,11 @@ function ensureDir(file: string) {
 }
 
 export class Store {
-  readonly db: DatabaseSync;
+  readonly db: Database;
 
   constructor(dbPath = config.dbPath) {
     ensureDir(dbPath);
-    this.db = new DatabaseSync(dbPath);
+    this.db = new Database(dbPath);
     this.db.exec("PRAGMA journal_mode = WAL;");
     this.db.exec("PRAGMA foreign_keys = ON;");
     this.migrate();

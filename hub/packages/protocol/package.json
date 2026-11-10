@@ -14,13 +14,14 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test test/schema.test.mjs"
+    "test": "bun test"
   },
   "dependencies": {
     "zod": "^4.6.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.0",
+    "@types/bun": "^1.4.0"
   }
 }
